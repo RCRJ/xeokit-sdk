@@ -41,6 +41,7 @@ export class RenderService {
     checkbox.id = `checkbox-${node.nodeId}`;
     checkbox.type = "checkbox";
     checkbox.checked = node.checked;
+    checkbox.indeterminate = node.indeterminate;
     checkbox.style["pointer-events"] = "all";
     if (checkHandler) checkbox.addEventListener("change", checkHandler);
     nodeElement.appendChild(checkbox);

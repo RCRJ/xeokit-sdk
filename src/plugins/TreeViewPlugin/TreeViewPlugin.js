@@ -15,7 +15,7 @@ const treeViews = [];
  *
  * * A fast HTML tree view, with zero external dependencies, that works with huge numbers of objects.
  * * Each tree node has a checkbox to control the visibility of its object.
- * * Has three hierarchy modes: "containment", "types" and "storeys".
+ * * Has four hierarchy modes: "containment", "types", "storeys", and "models".
  * * Automatically contains all models (that have metadata) that are currently in the {@link Scene}.
  * * Sorts tree nodes by default - spatially, from top-to-bottom for ````IfcBuildingStorey```` nodes, and alphanumerically for other nodes.
  * * Allows custom CSS styling.
@@ -142,6 +142,7 @@ const treeViews = [];
  * * "containment" - organizes the tree nodes to indicate the containment hierarchy of the {@link MetaObject}s.
  * * "types" - groups nodes by their IFC types.
  * * "storeys" - groups nodes within their ````IfcBuildingStoreys````, and sub-groups them by their IFC types.
+ * * "models" - groups nodes within their metaModel, and sub-groups them by their ````IfcBuildingStoreys```` and IFC types.
  *
  * <br>
  * The table below shows what the hierarchies look like:
@@ -166,7 +167,7 @@ const treeViews = [];
  * TreeViewPlugin sorts its tree nodes by default. For a "storeys" hierarchy, it orders ````IfcBuildingStorey```` nodes
  * spatially, with the node for the highest story at the top, down to the lowest at the bottom.
  *
- * For all the hierarchy types ("containment", "classes" and "storeys"), TreeViewPlugin sorts the other node types
+ * For all the hierarchy types ("containment", "classes", "storeys" and "models"), TreeViewPlugin sorts the other node types
  * alphanumerically on their titles.
  *
  * If for some reason you need to prevent sorting, create your TreeViewPlugin with the option disabled, like so:
@@ -355,7 +356,7 @@ export class TreeViewPlugin extends Plugin {
      * @param {HTMLElement} cfg.containerElement DOM element to contain the TreeViewPlugin.
      * @param {Boolean} [cfg.autoAddModels=true] When ````true```` (default), will automatically add each model as it's created. Set this ````false```` if you want to manually add models using {@link TreeViewPlugin#addModel} instead.
      * @param {Number} [cfg.autoExpandDepth] Optional depth to which to initially expand the tree.
-     * @param {String} [cfg.hierarchy="containment"] How to organize the tree nodes: "containment", "storeys" or "types". See the class documentation for details.
+     * @param {String} [cfg.hierarchy="containment"] How to organize the tree nodes: "containment", "storeys", "types" or "models". See the class documentation for details.
      * @param {Boolean} [cfg.sortNodes=true] When true, will sort the children of each node. For a "storeys" hierarchy, the
      * ````IfcBuildingStorey```` nodes will be ordered spatially, from the highest storey down to the lowest, on the
      * vertical World axis. For all hierarchy types, other node types will be ordered in the ascending alphanumeric order of their titles.
@@ -363,6 +364,7 @@ export class TreeViewPlugin extends Plugin {
      * @param {RenderService} [cfg.renderService] Optional {@link RenderService} to use. Defaults to the {@link TreeViewPlugin}'s default {@link RenderService}.
      * @param {Boolean} [cfg.showIndeterminate=false] When true, will show indeterminate state for checkboxes when some but not all child nodes are checked
      * @param {Boolean} [cfg.showProjectNode=false] When true, will show top level project node when hierarchy is set to "storeys"
+     * @param {Boolean} [cfg.showModelStories=false] When true, will show storey nodes when hierarchy is set to "models"
      */
     constructor(viewer, cfg = {}) {
 
@@ -407,7 +409,7 @@ export class TreeViewPlugin extends Plugin {
         this._muteSceneEvents = false;
         this._muteTreeEvents = false;
         this._rootNodes = [];
-        this._objectNodes = {}; // Object ID -> Node
+        this._objectNodes = {}; // Object ID -> Node[]
         this._nodeNodes = {}; // Node ID -> Node
         this._rootNames = {}; // Node ID -> Root name
         this._sortNodes = cfg.sortNodes;
@@ -415,6 +417,7 @@ export class TreeViewPlugin extends Plugin {
         this._showListItemElementId = null;
         this._renderService = cfg.renderService || new RenderService();
         this._showIndeterminate = cfg.showIndeterminate ?? false;
+        this._showModelStories = cfg.showModelStories ?? false;
         this._showProjectNode = cfg.showProjectNode ?? false;
 
         if (!this._renderService) {
@@ -430,42 +433,44 @@ export class TreeViewPlugin extends Plugin {
                 return;
             }
             const objectId = entity.id;
-            const node = this._objectNodes[objectId];
-            if (!node) {
-                return; // Not in this tree
+            const nodes = this._objectNodes[objectId];
+            if (nodes) {
+                nodes.forEach((node) => {
+                    const visible = entity.visible;
+                    const updated = (visible !== node.checked);
+                    if (!updated) {
+                        return;
+                    }
+                    this._muteTreeEvents = true;
+                    node.checked = visible;
+                    if (visible) {
+                        node.numVisibleEntities++;
+                    } else {
+                        node.numVisibleEntities--;
+                    }
+        
+                    this._renderService.setCheckbox(node.nodeId, visible);
+        
+                    let parent = node.parent;
+                    while (parent) {
+                        visible
+                            ? parent.numVisibleEntities++
+                            : parent.numVisibleEntities--;
+                        
+                        const indeterminate = this._showIndeterminate 
+                            && parent.numVisibleEntities > 0 
+                            && parent.numVisibleEntities < parent.numEntities;
+                            
+                        parent.indeterminate = indeterminate;
+                        parent.checked = indeterminate ? true : visible;
+                        
+                        this._renderService.setCheckbox(parent.nodeId, (parent.numVisibleEntities > 0), indeterminate);
+                        parent = parent.parent;
+                    }
+        
+                    this._muteTreeEvents = false;
+                })
             }
-            const visible = entity.visible;
-            const updated = (visible !== node.checked);
-            if (!updated) {
-                return;
-            }
-            this._muteTreeEvents = true;
-            node.checked = visible;
-            if (visible) {
-                node.numVisibleEntities++;
-            } else {
-                node.numVisibleEntities--;
-            }
-
-            this._renderService.setCheckbox(node.nodeId, visible);
-
-            let parent = node.parent;
-            while (parent) {
-                parent.checked = visible;
-                if (visible) {
-                    parent.numVisibleEntities++;
-                } else {
-                    parent.numVisibleEntities--;
-                }
-                const indeterminate = this._showIndeterminate 
-                  && parent.numVisibleEntities > 0 
-                  && parent.numVisibleEntities < parent.numEntities;
-                this._renderService.setCheckbox(parent.nodeId, (parent.numVisibleEntities > 0), indeterminate);
-
-                parent = parent.parent;
-            }
-
-            this._muteTreeEvents = false;
         });
 
         this._onObjectXrayed = this._viewer.scene.on('objectXRayed', (entity) => {
@@ -473,20 +478,21 @@ export class TreeViewPlugin extends Plugin {
                 return;
             }
             const objectId = entity.id;
-            const node = this._objectNodes[objectId];
-            if (!node) {
-                return; // Not in this tree
+            const nodes = this._objectNodes[objectId];
+            if (nodes) {
+                nodes.forEach((node) => {
+                    this._muteTreeEvents = true;
+                    const xrayed = entity.xrayed;
+                    const updated = (xrayed !== node.xrayed);
+                    if (!updated) {
+                        return;
+                    }
+                    node.xrayed = xrayed;
+        
+                    this._renderService.setXRayed(node.nodeId, xrayed);
+                    this._muteTreeEvents = false;
+                })
             }
-            this._muteTreeEvents = true;
-            const xrayed = entity.xrayed;
-            const updated = (xrayed !== node.xrayed);
-            if (!updated) {
-                return;
-            }
-            node.xrayed = xrayed;
-
-            this._renderService.setXRayed(node.nodeId, xrayed);
-            this._muteTreeEvents = false;
         });
 
         this._switchExpandHandler = (event) => {
@@ -513,9 +519,19 @@ export class TreeViewPlugin extends Plugin {
             const nodeId = this._renderService.getIdFromCheckbox(checkbox);
 
             const checkedNode = this._nodeNodes[nodeId];
+            const relatedNodes = this._objectNodes[checkedNode.objectId];
+            
+            relatedNodes.forEach((node) => {
+                this._checkboxChangeHandlerUpdateNodes(node, visible);
+            })
+            
+            this._muteSceneEvents = false;
+        };
+
+        this._checkboxChangeHandlerUpdateNodes = (checkedNode, visible) => {
             const objects = this._viewer.scene.objects;
             let numUpdated = 0;
-            
+
             this._withNodeTree(checkedNode, (node) => {
                 const objectId = node.objectId;
                 const entity = objects[objectId];
@@ -525,9 +541,7 @@ export class TreeViewPlugin extends Plugin {
                     numUpdated++;
                 }
                 node.checked = visible;
-
                 this._renderService.setCheckbox(node.nodeId, visible);
-                
                 if (entity) {
                     entity.visible = visible;
                 }
@@ -535,22 +549,21 @@ export class TreeViewPlugin extends Plugin {
 
             let parent = checkedNode.parent;
             while (parent) {
-                parent.checked = visible;
+                visible
+                    ? parent.numVisibleEntities++
+                    : parent.numVisibleEntities--;
                 
-                if (visible) {
-                    parent.numVisibleEntities += numUpdated;
-                } else {
-                    parent.numVisibleEntities -= numUpdated;
-                }
                 const indeterminate = this._showIndeterminate 
-                  && parent.numVisibleEntities > 0 
-                  && parent.numVisibleEntities < parent.numEntities;
-                this._renderService.setCheckbox(parent.nodeId, (parent.numVisibleEntities > 0), indeterminate);
+                    && parent.numVisibleEntities > 0 
+                    && parent.numVisibleEntities < parent.numEntities;
+                    
+                parent.indeterminate = indeterminate;
+                parent.checked = indeterminate ? true : visible;
                 
+                this._renderService.setCheckbox(parent.nodeId, (parent.numVisibleEntities > 0), indeterminate);
                 parent = parent.parent;
             }
-            this._muteSceneEvents = false;
-        };
+        }
 
         this._hierarchy = cfg.hierarchy || "containment";
         this._autoExpandDepth = cfg.autoExpandDepth || 0;
@@ -582,6 +595,7 @@ export class TreeViewPlugin extends Plugin {
      * * "containment" - organizes the nodes to indicate the containment hierarchy of the IFC objects.
      * * "types" - groups the nodes within their IFC types.
      * * "storeys" - groups the nodes within ````IfcBuildingStoreys```` and sub-groups them by their IFC types.
+     * * "models" - groups nodes within their metaModel, and sub-groups them by their ````IfcBuildingStoreys```` and IFC types.
      *
      * <br>
      * This can be updated dynamically.
@@ -592,7 +606,7 @@ export class TreeViewPlugin extends Plugin {
      */
     set hierarchy(hierarchy) {
         hierarchy = hierarchy || "containment";
-        if (hierarchy !== "containment" && hierarchy !== "storeys" && hierarchy !== "types") {
+        if (hierarchy !== "containment" && hierarchy !== "storeys" && hierarchy !== "types" && hierarchy !== "models" ) {
             this.error("Unsupported value for `hierarchy' - defaulting to 'containment'");
             hierarchy = "containment";
         }
@@ -624,7 +638,8 @@ export class TreeViewPlugin extends Plugin {
      * @param {Object} [options] Options for model in the tree view.
      * @param {String} [options.rootName] Optional display name for the root node. Ordinary, for "containment"
      * and "storeys" hierarchy types, the tree would derive the root node name from the model's "IfcProject" element
-     * name. This option allows to override that name when it is not suitable as a display name.
+     * name. This option allows to override that name when it is not suitable as a display name. This option is the 
+     * default value used for the root model node in the "models" hierarchy
      */
     addModel(modelId, options = {}) {
         if (!this._containerElement) {
@@ -652,6 +667,51 @@ export class TreeViewPlugin extends Plugin {
         model.on("destroyed", () => {
             this.removeModel(model.id);
         });
+        this._createNodes();
+    }
+
+    /**
+     * Adds a list of models to this tree view.
+     *
+     * The models will be automatically removed when destroyed.
+     *
+     * To automatically add each model as it's created, instead of manually calling this method,
+     * provide a ````autoAddModels: true```` to the TreeViewPlugin constructor.
+     *
+     * @param {String[]} modelIds IDs of the model {@link Entity}s in {@link Scene#models}.
+     * @param {Object} [options] Options for model in the tree view.
+     * @param {Object} [options.rootNames] Optional display name for the root nodes, indexed by the modelId. 
+     * Ordinary, for "containment" and "storeys" hierarchy types, the tree would derive the root node name from the
+     * model's "IfcProject" element name. This option allows to override that name when it is not suitable as a display
+     * name. This option is the default value used for the root model node in the "models" hierarchy
+     */
+    addModels(modelIds, options = {}) {
+        if (!this._containerElement) {
+            return;
+        }
+        modelIds.forEach((modelId) => {
+            const model = this.viewer.scene.models[modelId];
+            if (!model) {
+                throw "Model not found: " + modelId;
+            }
+            const metaModel = this.viewer.metaScene.metaModels[modelId];
+            if (!metaModel) {
+                this.error("MetaModel not found: " + modelId);
+                return;
+            }
+            if (this._metaModels[modelId]) {
+                this.warn("Model already added: " + modelId);
+                return;
+            }
+            this._metaModels[modelId] = metaModel;
+    
+            if (options && options.rootNames) {
+                this._rootNames[modelId] = options.rootNames[modelId];
+            }
+            
+            model.on("destroyed", () => this.removeModel(model.id));
+        });
+
         this._createNodes();
     }
 
@@ -697,41 +757,38 @@ export class TreeViewPlugin extends Plugin {
      */
     showNode(objectId) {
         this.unShowNode();
-
-        const node = this._objectNodes[objectId];
-        if (!node) {
-            return; // Node may not exist for the given object if (this._pruneEmptyNodes == true)
-        }
-
-        this.collapse();
-
-        const nodeId = node.nodeId;
-
-        const switchElement = this._renderService.getSwitchElement(nodeId);
-        if (switchElement) {
-            this._expandSwitchElement(switchElement);
-            switchElement.scrollIntoView();
-            return true;
-        }
-        
-        const path = [];
-        path.unshift(node);
-        let parent = node.parent;
-        while (parent) {
-            path.unshift(parent);
-            parent = parent.parent;
-        }
-
-        for (let i = 0, len = path.length; i < len; i++) {
-            const switchElement = this._renderService.getSwitchElement(path[i].nodeId);
+        const nodes = this._objectNodes[objectId];
+        if (nodes) {
+            this.collapse();
+    
+            const nodeId = node.nodeId;
+    
+            const switchElement = this._renderService.getSwitchElement(nodeId);
             if (switchElement) {
                 this._expandSwitchElement(switchElement);
+                switchElement.scrollIntoView();
+                return true;
             }
+            
+            const path = [];
+            path.unshift(node);
+            let parent = node.parent;
+            while (parent) {
+                path.unshift(parent);
+                parent = parent.parent;
+            }
+    
+            for (let i = 0, len = path.length; i < len; i++) {
+                const switchElement = this._renderService.getSwitchElement(path[i].nodeId);
+                if (switchElement) {
+                    this._expandSwitchElement(switchElement);
+                }
+            }
+    
+            this._renderService.setHighlighted(nodeId, true);
+    
+            this._showListItemElementId = nodeId;
         }
-
-        this._renderService.setHighlighted(nodeId, true);
-
-        this._showListItemElementId = nodeId;
     }
 
     /**
@@ -837,7 +894,7 @@ export class TreeViewPlugin extends Plugin {
         this._objectNodes = {};
         this._nodeNodes = {};
         this._validate();
-        if (this.valid || (this._hierarchy !== "storeys")) {
+        if (this.valid || (this._hierarchy !== "storeys" && this._hierarchy !== "models")) {
             this._createEnabledNodes();
         } else {
             this._createDisabledNodes();
@@ -850,9 +907,10 @@ export class TreeViewPlugin extends Plugin {
             case "storeys":
                 this.valid = this._validateMetaModelForStoreysHierarchy();
                 break;
-            case "types":
-                this.valid = (this._rootNodes.length > 0);
+            case "models":
+                this.valid = this._validateMetaModelForModelsHierarchy();
                 break;
+            case "types":
             case "containment":
             default:
                 this.valid = (this._rootNodes.length > 0);
@@ -892,6 +950,12 @@ export class TreeViewPlugin extends Plugin {
         return true;
     }
 
+    _validateMetaModelForModelsHierarchy() {
+        return Object.values(this._viewer.metaScene.metaObjects).some((metaObject) => {
+            return metaObject.metaModels ? metaObject.metaModels.length : false;
+        });
+    }
+
     _createEnabledNodes() {
         if (this._pruneEmptyNodes) {
             this._findEmptyNodes();
@@ -901,6 +965,12 @@ export class TreeViewPlugin extends Plugin {
                 this._createStoreysNodes();
                 if (this._rootNodes.length === 0) {
                     this.error("Failed to build storeys hierarchy");
+                }
+                break;
+            case "models":
+                this._createModelsNodes();
+                if (this._rootNodes.length === 0) {
+                    this.error("Failed to build models hierarchy");
                 }
                 break;
             case "types":
@@ -919,7 +989,6 @@ export class TreeViewPlugin extends Plugin {
     }
 
     _createDisabledNodes() {
-
         const rootNode = this._renderService.createRootNode();
         this._rootElement = rootNode;
         this._containerElement.appendChild(rootNode);
@@ -997,7 +1066,9 @@ export class TreeViewPlugin extends Plugin {
                 children: [],
             };
             this._rootNodes.push(projectNode);
-            this._objectNodes[projectNode.objectId] = projectNode;
+            this._objectNodes[projectNode.objectId] 
+                ? this._objectNodes[projectNode.objectId].push(projectNode)
+                : this._objectNodes[projectNode.objectId] = [projectNode];
             this._nodeNodes[projectNode.nodeId] = projectNode;
         } else if (metaObjectType === "IfcBuilding") {
             buildingNode = {
@@ -1017,7 +1088,9 @@ export class TreeViewPlugin extends Plugin {
             } else {
                 this._rootNodes.push(buildingNode);
             }
-            this._objectNodes[buildingNode.objectId] = buildingNode;
+            this._objectNodes[buildingNode.objectId] 
+                ? this._objectNodes[buildingNode.objectId].push(buildingNode)
+                : this._objectNodes[buildingNode.objectId] = [buildingNode];
             this._nodeNodes[buildingNode.nodeId] = buildingNode;
         } else if (metaObjectType === "IfcBuildingStorey") {
             if (!buildingNode) {
@@ -1037,7 +1110,9 @@ export class TreeViewPlugin extends Plugin {
                 children: []
             };
             buildingNode.children.push(storeyNode);
-            this._objectNodes[storeyNode.objectId] = storeyNode;
+            this._objectNodes[storeyNode.objectId] 
+                ? this._objectNodes[storeyNode.objectId].push(storeyNode)
+                : this._objectNodes[storeyNode.objectId] = [storeyNode];
             this._nodeNodes[storeyNode.nodeId] = storeyNode;
             typeNodes = {};
         } else {
@@ -1061,7 +1136,9 @@ export class TreeViewPlugin extends Plugin {
                             children: []
                         };
                         storeyNode.children.push(typeNode);
-                        this._objectNodes[typeNode.objectId] = typeNode;
+                        this._objectNodes[typeNode.objectId] 
+                            ? this._objectNodes[typeNode.objectId].push(typeNode)
+                            : this._objectNodes[typeNode.objectId] = [typeNode];
                         this._nodeNodes[typeNode.nodeId] = typeNode;
                         typeNodes[metaObjectType] = typeNode;
                     }
@@ -1078,7 +1155,9 @@ export class TreeViewPlugin extends Plugin {
                         children: []
                     };
                     typeNode.children.push(node);
-                    this._objectNodes[node.objectId] = node;
+                    this._objectNodes[node.objectId] 
+                        ? this._objectNodes[node.objectId].push(node)
+                        : this._objectNodes[node.objectId] = [node];
                     this._nodeNodes[node.nodeId] = node;
                 }
             }
@@ -1088,6 +1167,146 @@ export class TreeViewPlugin extends Plugin {
                 const childMetaObject = children[i];
                 this._createStoreysNodes2(childMetaObject, projectNode, buildingNode, storeyNode, typeNodes);
             }
+        }
+    }
+
+    _createModelsNodes() {
+        const metaModels = Object.values(this._viewer.metaScene.metaModels).sort((a, b) => {
+            const aTitle = this._rootNames[a.id];
+            const bTitle = this._rootNames[b.id];
+            if (aTitle && bTitle) return aTitle.localeCompare(bTitle);
+            return 0;
+        });
+
+        metaModels.forEach((metaModel) => {
+            const metaObjectType = "Model";
+            const modelNode = {
+                nodeId: `${this._id}-${metaModel.id}`,
+                objectId: metaModel.id,
+                title: this._rootNames[metaModel.id] || metaObjectType,
+                type: metaObjectType,
+                parent: null,
+                metaModel,
+                numEntities: 0,
+                numVisibleEntities: 0,
+                checked: false,
+                xrayed: false,
+                children: []
+            };
+            const typeNode = {};
+            
+            Object.values(metaModel.metaObjects).forEach((metaObject) => {
+                const { type, _countEntities: countEntities } = metaObject;
+                
+                const validForStoriesEnabled = 
+                    this._showModelStories && type === "IfcBuildingStorey" && countEntities > 0;
+                const validForStoriesDisabled = 
+                    !this._showModelStories && countEntities > 0;
+
+                if (validForStoriesEnabled || validForStoriesDisabled) {
+                    this._createModelsNodes2(metaObject, modelNode, null, typeNode);
+                }
+            });
+
+            if (modelNode.children.length) {
+                this._rootNodes.push(modelNode);
+                this._objectNodes[modelNode.objectId] 
+                    ? this._objectNodes[modelNode.objectId].push(modelNode)
+                    : this._objectNodes[modelNode.objectId] = [modelNode];
+                this._nodeNodes[modelNode.nodeId] = modelNode;
+            }
+        })
+    }
+
+    _createModelsNodes2(metaObject, modelNode, storeyNode, typeNodes) {
+        const pruneEmptyNode = this._pruneEmptyNodes && (metaObject._countEntities === 0);
+        const metaModelsMatch = metaObject.metaModels.includes(modelNode.metaModel);
+        if (pruneEmptyNode || !metaModelsMatch) return;
+        
+        const metaObjectType = metaObject.type;
+        const metaObjectName = metaObject.name;
+        const children = metaObject.children;
+        const objectId = metaObject.id;
+
+        if (this._showModelStories && metaObjectType === "IfcBuildingStorey") {
+            storeyNode = {
+                nodeId: `${modelNode.nodeId}-${objectId}`,
+                objectId: objectId,
+                title: (metaObjectName && metaObjectName !== "" && metaObjectName !== "Undefined" && metaObjectName !== "Default") ? metaObjectName : metaObjectType,
+                type: metaObjectType,
+                parent: modelNode,
+                numEntities: 0,
+                numVisibleEntities: 0,
+                checked: false,
+                xrayed: false,
+                children: []
+            };
+            typeNodes = {};
+        } else if (metaObjectType !== "IfcBuildingStorey") {
+            const parentNode = this._showModelStories ? storeyNode : modelNode;
+            const objects = this._viewer.scene.objects;
+            const object = objects[objectId];
+            if (parentNode && object) {
+                typeNodes = typeNodes || {};
+                let typeNode = typeNodes[metaObjectType];
+                
+                if (!typeNode) {
+                    typeNode = {
+                        nodeId: `${parentNode.nodeId}-${metaObjectType}`,
+                        objectId: `${parentNode.objectId}-${metaObjectType}`,
+                        title: metaObjectType,
+                        type: metaObjectType,
+                        parent: parentNode,
+                        numEntities: 0,
+                        numVisibleEntities: 0,
+                        checked: false,
+                        xrayed: false,
+                        children: []
+                    };
+                    parentNode.children.push(typeNode);
+                    this._objectNodes[typeNode.objectId] 
+                        ? this._objectNodes[typeNode.objectId].push(typeNode)
+                        : this._objectNodes[typeNode.objectId] = [typeNode];
+                    this._nodeNodes[typeNode.nodeId] = typeNode;
+                    typeNodes[metaObjectType] = typeNode;
+                }
+
+                const node = {
+                    nodeId: `${parentNode.nodeId}-${objectId}`,
+                    objectId: objectId,
+                    title: (metaObjectName && metaObjectName !== "" && metaObjectName !== "Undefined" && metaObjectName !== "Default") ? metaObjectName : metaObjectType,
+                    type: metaObjectType,
+                    parent: typeNode,
+                    numEntities: 0,
+                    numVisibleEntities: 0,
+                    checked: false,
+                    xrayed: false,
+                    children: []
+                };
+
+                if (this._showModelStories || !this._objectNodes[node.objectId]) {
+                    typeNode.children.push(node);
+                    this._objectNodes[node.objectId] 
+                        ? this._objectNodes[node.objectId].push(node)
+                        : this._objectNodes[node.objectId] = [node];
+                    this._nodeNodes[node.nodeId] = node;
+                }
+            }
+        }
+
+        if (children) {
+            for (let i = 0, len = children.length; i < len; i++) {
+                const childMetaObject = children[i];
+                this._createModelsNodes2(childMetaObject, modelNode, storeyNode, typeNodes);
+            }
+        }
+
+        if (this._showModelStories && metaObjectType === "IfcBuildingStorey" && storeyNode.children.length) {
+            modelNode.children.push(storeyNode);
+            this._objectNodes[storeyNode.objectId] 
+                ? this._objectNodes[storeyNode.objectId].push(storeyNode)
+                : this._objectNodes[storeyNode.objectId] = [storeyNode];
+            this._nodeNodes[storeyNode.nodeId] = storeyNode;
         }
     }
 
@@ -1120,7 +1339,9 @@ export class TreeViewPlugin extends Plugin {
                 children: []
             };
             this._rootNodes.push(rootNode);
-            this._objectNodes[rootNode.objectId] = rootNode;
+            this._objectNodes[rootNode.objectId] 
+                ? this._objectNodes[rootNode.objectId].push(rootNode)
+                : this._objectNodes[rootNode.objectId] = [rootNode];
             this._nodeNodes[rootNode.nodeId] = rootNode;
             typeNodes = {};
         } else {
@@ -1143,7 +1364,9 @@ export class TreeViewPlugin extends Plugin {
                             children: []
                         };
                         rootNode.children.push(typeNode);
-                        this._objectNodes[typeNode.objectId] = typeNode;
+                        this._objectNodes[typeNode.objectId] 
+                            ? this._objectNodes[typeNode.objectId].push(typeNode)
+                            : this._objectNodes[typeNode.objectId] = [typeNode];
                         this._nodeNodes[typeNode.nodeId] = typeNode;
                         typeNodes[metaObjectType] = typeNode;
                     }
@@ -1160,7 +1383,9 @@ export class TreeViewPlugin extends Plugin {
                         children: []
                     };
                     typeNode.children.push(node);
-                    this._objectNodes[node.objectId] = node;
+                    this._objectNodes[node.objectId] 
+                        ? this._objectNodes[node.objectId].push(node)
+                        : this._objectNodes[node.objectId] = [node];
                     this._nodeNodes[node.nodeId] = node;
                 }
             }
@@ -1205,7 +1430,9 @@ export class TreeViewPlugin extends Plugin {
         } else {
             this._rootNodes.push(node);
         }
-        this._objectNodes[node.objectId] = node;
+        this._objectNodes[node.objectId] 
+            ? this._objectNodes[node.objectId].push(node)
+            : this._objectNodes[node.objectId] = [node];
         this._nodeNodes[node.nodeId] = node;
         if (children) {
             for (let i = 0, len = children.length; i < len; i++) {
@@ -1228,7 +1455,7 @@ export class TreeViewPlugin extends Plugin {
             return;
         }
         const firstChild = children[0];
-        if ((this._hierarchy === "storeys" || this._hierarchy === "containment") &&  firstChild.type === "IfcBuildingStorey") {
+        if ((this._hierarchy === "storeys" || this._hierarchy === "models" || this._hierarchy === "containment") &&   firstChild.type === "IfcBuildingStorey") {
             children.sort(this._getSpatialSortFunc());
         } else {
             children.sort(this._alphaSortFunc);
@@ -1293,30 +1520,32 @@ export class TreeViewPlugin extends Plugin {
             const objectId = objectIds[i];
             const metaObject = metaObjects[objectId];
             if (metaObject) {
-                const node = this._objectNodes[objectId];
-                if (node) {
-                    const entity = objects[objectId];
-                    if (entity) {
-                        const visible = entity.visible;
-                        node.numEntities = 1;
-                        node.xrayed = entity.xrayed;
-                        if (visible) {
-                            node.numVisibleEntities = 1;
-                            node.checked = true;
-                        } else {
-                            node.numVisibleEntities = 0;
-                            node.checked = false;
-                        }
-                        let parent = node.parent; // Synch parents
-                        while (parent) {
-                            parent.numEntities++;
+                const nodes = this._objectNodes[objectId];
+                if (nodes) {
+                    nodes.forEach((node) => {
+                        const entity = objects[objectId];
+                        if (entity) {
+                            const visible = entity.visible;
+                            node.numEntities = 1;
+                            node.xrayed = entity.xrayed;
                             if (visible) {
-                                parent.numVisibleEntities++;
-                                parent.checked = true;
+                                node.numVisibleEntities = 1;
+                                node.checked = true;
+                            } else {
+                                node.numVisibleEntities = 0;
+                                node.checked = false;
                             }
-                            parent = parent.parent;
+                            let parent = node.parent; // Synch parents
+                            while (parent) {
+                                parent.numEntities++;
+                                if (visible) {
+                                    parent.numVisibleEntities++;
+                                    parent.checked = true;
+                                }
+                                parent = parent.parent;
+                            }
                         }
-                    }
+                    })
                 }
             }
         }

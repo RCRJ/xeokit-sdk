@@ -70,6 +70,25 @@ export declare class TreeViewPlugin extends Plugin {
   }): void;
 
   /**
+     * Adds a list of models to this tree view.
+     *
+     * The models will be automatically removed when destroyed.
+     *
+     * To automatically add each model as it's created, instead of manually calling this method,
+     * provide a ````autoAddModels: true```` to the TreeViewPlugin constructor.
+     *
+     * @param {String[]} modelIds IDs of the model {@link Entity}s in {@link Scene#models}.
+     * @param {Object} [options] Options for model in the tree view.
+     * @param {Object} [options.rootNames] Optional display name for the root nodes, indexed by the modelId. 
+     * Ordinary, for "containment" and "storeys" hierarchy types, the tree would derive the root node name from the
+     * model's "IfcProject" element name. This option allows to override that name when it is not suitable as a display
+     * name. This option is the default value used for the root model node in the "models" hierarchy
+     */
+  addModels(modelIds: string[], options?: { rootNames?: 
+    Record<string, string> 
+  }): void;
+
+  /**
    * Removes a model from this tree view.
    *
    * Does nothing if model not currently in tree view.
